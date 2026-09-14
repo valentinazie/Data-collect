@@ -1,0 +1,7 @@
+# Environment variables
+.env
+.env.*
+
+# SSH / VM keys
+*.vm
+vm_ssh_key.vm
