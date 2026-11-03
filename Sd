@@ -100,3 +100,11 @@ promr "max by (pod,reason)(kube_pod_container_status_last_terminated_reason{name
 echo "== liveness/readiness probe 실패 횟수 (5분)"
 promr "sum by (pod,probe_type)(increase(prober_probe_total{namespace=\"$NS\",pod=~\"$POD\",result!=\"successful\"}[5m]))" 2026-11-02T09:00:00Z 2026-11-02T11:40:00Z 300 1
 
+
+
+
+
+
+
+
+promr "max by (pod)(max_over_time(container_memory_working_set_bytes{namespace=\"$NS\",pod=~\"$POD\",container!=\"\",container!=\"POD\"}[1h]))" 2026-11-02T11:00:00Z $(date -u +%Y-%m-%dT%H:00:00Z) 3600 1048576
