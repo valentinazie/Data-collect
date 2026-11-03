@@ -74,3 +74,29 @@ promr "max by (pod)(changes(kube_pod_container_status_restarts_total{namespace=\
 echo "== 종료 사유"
 promr "max by (pod,reason)(kube_pod_container_status_last_terminated_reason{namespace=\"$NS\",pod=~\"$POD\"})" 2026-11-02T09:00:00Z 2026-11-02T11:40:00Z 1800 1
 
+
+
+
+
+promr () {
+  $PROM http://localhost:9090/api/v1/query_range --data-urlencode "query=$1" \
+    --data-urlencode "start=$2" --data-urlencode "end=$3" --data-urlencode "step=$4" \
+  | python3 -c '
+import sys,json,datetime as d
+div=float(sys.argv[1]); r=json.load(sys.stdin)
+if r.get("status")!="success": print(r); sys.exit()
+if not r["data"]["result"]: print("  (no data)")
+for s in r["data"]["result"]:
+  print("  ", {k:v for k,v in s["metric"].items() if k!="__name__"})
+  for t,v in s["values"]:
+    k=d.datetime.utcfromtimestamp(float(t))+d.timedelta(hours=9)
+    if float(v)!=0: print("   ", k.strftime("%m/%d %H:%M KST"), round(float(v)/div,2))
+' "$5"
+}
+
+echo "== 종료 사유 (reason 라벨 확인)"
+promr "max by (pod,reason)(kube_pod_container_status_last_terminated_reason{namespace=\"$NS\",pod=~\"$POD\"})" 2026-11-02T09:00:00Z 2026-11-02T11:40:00Z 300 1
+
+echo "== liveness/readiness probe 실패 횟수 (5분)"
+promr "sum by (pod,probe_type)(increase(prober_probe_total{namespace=\"$NS\",pod=~\"$POD\",result!=\"successful\"}[5m]))" 2026-11-02T09:00:00Z 2026-11-02T11:40:00Z 300 1
+
