@@ -11,3 +11,15 @@ oc -n ai logs ibm-lh-lakehouse-milvus72-kafka-2 --since=6h | grep -iE 'outofmemo
 # 최근 6시간 컨테이너 메모리 추이 (1시간 간격, MiB)
 POD='.*milvus72-kafka.*'
 promr "max by (pod)(max_over_time(container_memory_working_set_bytes{namespace=\"ai\",pod=~\"$POD\",container!=\"\",container!=\"POD\"}[1h]))" $(date -u -d '-6 hour' +%Y-%m-%dT%H:00:00Z) $(date -u +%Y-%m-%dT%H:00:00Z) 3600 1048576
+
+
+
+
+# heap 상한 (-Xmx) 확인
+oc -n ai exec ibm-lh-lakehouse-milvus72-kafka-2 -- sh -c 'ps -ef | grep -o "Xm[xs][^ ]*" | sort -u; env | grep -i heap'
+
+# 재시작 횟수 (RESTARTS 열)
+oc -n ai get pod | grep milvus72-kafka
+
+# GC·OOM 경고 (앞서 드린 명령, 결과가 비어 있으면 정상)
+oc -n ai logs ibm-lh-lakehouse-milvus72-kafka-2 --since=6h | grep -iE 'outofmemory|gc overhead|pause' | tail -20
