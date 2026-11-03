@@ -1,110 +1,17 @@
-oc로 하면 Prometheus 안에 직접 물어볼 수 있어요. bastion에서 아래를 순서대로 붙여 넣으세요. 모두 읽기 전용이에요.
-
-**1. 지금 상태 (pod 이름, 한도, 재시작 이력, 현재 메모리)**
-```bash
-NS=ai
-oc -n $NS get pods | grep -i querycoord
-QC=$(oc -n $NS get pods -o name | grep -i 'milvus844.*querycoord' | head -1); echo "$QC"
-oc -n $NS get $QC -o jsonpath='{range .spec.containers[*]}{.name}{"  limits="}{.resources.limits}{"\n"}{end}{range .status.containerStatuses[*]}{.name}{"  restarts="}{.restartCount}{"  last="}{.lastState.terminated.reason}{" "}{.lastState.terminated.finishedAt}{"\n"}{end}'
-oc adm top pod -n $NS | grep -i querycoord
-```
-
-**2. Prometheus 조회 함수 준비 (한 번만)**
-```bash
-NS=ai; POD='.*milvus844.*querycoord.*'
-PROM='oc -n openshift-monitoring exec -c prometheus prometheus-k8s-0 -- curl -s --get'
-promr () {  # 구간 조회: 쿼리, 시작(UTC), 끝(UTC), 간격(초), 나눌 값
-  $PROM http://localhost:9090/api/v1/query_range --data-urlencode "query=$1" \
-    --data-urlencode "start=$2" --data-urlencode "end=$3" --data-urlencode "step=$4" \
-  | python3 -c '
-import sys,json,datetime as d
-div=float(sys.argv[1]); r=json.load(sys.stdin)
-if r.get("status")!="success": print(r); sys.exit()
-if not r["data"]["result"]: print("  (no data)")
-for s in r["data"]["result"]:
-  print("  pod:", s["metric"].get("pod","-"))
-  for t,v in s["values"]:
-    k=d.datetime.utcfromtimestamp(float(t))+d.timedelta(hours=9)
-    print("   ", k.strftime("%m/%d %H:%M KST"), round(float(v)/div,2))
-' "$5"
-}
-```
-
-**3. 실행**
-```bash
-echo "== 메모리 MiB, 11/02 18:00~20:30 (5분 간격)"
-promr "max by (pod)(container_memory_working_set_bytes{namespace=\"$NS\",pod=~\"$POD\",container!=\"\",container!=\"POD\"})" 2026-11-02T09:00:00Z 2026-11-02T11:30:00Z 300 1048576
-
-echo "== 일별 최대 메모리 MiB, 최근 8일"
-promr "max by (pod)(max_over_time(container_memory_working_set_bytes{namespace=\"$NS\",pod=~\"$POD\",container!=\"\",container!=\"POD\"}[1d]))" 2026-10-27T00:00:00Z 2026-11-03T06:00:00Z 86400 1048576
-
-echo "== CPU 코어, 11/02 18:00~20:30"
-promr "sum by (pod)(rate(container_cpu_usage_seconds_total{namespace=\"$NS\",pod=~\"$POD\",container!=\"\",container!=\"POD\"}[5m]))" 2026-11-02T09:00:00Z 2026-11-02T11:30:00Z 300 1
-
-echo "== CPU throttling 초당 횟수, 11/02 18:00~20:30"
-promr "sum by (pod)(rate(container_cpu_cfs_throttled_periods_total{namespace=\"$NS\",pod=~\"$POD\"}[5m]))" 2026-11-02T09:00:00Z 2026-11-02T11:30:00Z 300 1
-
-echo "== 재시작 누적 횟수, 최근 8일 (일 단위)"
-promr "max by (pod)(kube_pod_container_status_restarts_total{namespace=\"$NS\",pod=~\"$POD\"})" 2026-10-27T00:00:00Z 2026-11-03T06:00:00Z 86400 1
-```
-
-- 1번은 바로 결과가 나와요. 지금 한도(4Gi로 바뀌었는지)와 현재 사용량을 보는 단계예요.
-- 3번의 첫 결과가 핵심이에요. 18시부터 512 근처에서 맴돌았는지, 19:30~20:10에 튀었는지 보면 돼요.
-- `prometheus-k8s-0`에서 `curl: not found`나 권한 오류가 나면 그 메시지를 붙여 주세요. 다른 방법으로 바꿔 드릴게요.
-
-결과를 붙여 주시면 "원래 한도가 작았다"인지 "그날 몰렸다"인지 해석해 드릴게요.
+for N in $(oc -n ai get pod -o wide | grep -i 'milvus844.*querynode' | awk '{print $7}' | sort -u); do
+  oc get --raw /api/v1/nodes/$N/proxy/stats/summary | python3 -c '
+import sys,json
+for p in json.load(sys.stdin)["pods"]:
+  if "querynode" in p["podRef"]["name"] and "milvus844" in p["podRef"]["name"]:
+    e=p.get("ephemeral-storage",{}); print(p["podRef"]["name"], round(e.get("usedBytes",0)/2**20),"MiB")'
+done
 
 
 
-
-NS=ai; POD='.*milvus844.*querycoord.*'
-
-echo "== 장애 당시 CPU·메모리 한도 (cpu=코어, memory=바이트)"
-promr "max by (pod,resource)(kube_pod_container_resource_limits{namespace=\"$NS\",pod=~\"$POD\",container!=\"\"})" 2026-11-02T09:00:00Z 2026-11-02T12:00:00Z 3600 1
-
-echo "== 5분 구간별 최대 메모리 MiB (순간 급등 포착)"
-promr "max by (pod)(max_over_time(container_memory_working_set_bytes{namespace=\"$NS\",pod=~\"$POD\",container!=\"\",container!=\"POD\"}[5m]))" 2026-11-02T09:00:00Z 2026-11-02T11:40:00Z 300 1048576
-
-echo "== CPU throttling 비율 (1이면 매 주기 막힘)"
-promr "sum by (pod)(rate(container_cpu_cfs_throttled_periods_total{namespace=\"$NS\",pod=~\"$POD\"}[5m])) / sum by (pod)(rate(container_cpu_cfs_periods_total{namespace=\"$NS\",pod=~\"$POD\"}[5m]))" 2026-11-02T09:00:00Z 2026-11-02T11:40:00Z 300 1
-
-echo "== 5분마다 재시작 횟수 (언제 처음 죽었나)"
-promr "max by (pod)(changes(kube_pod_container_status_restarts_total{namespace=\"$NS\",pod=~\"$POD\"}[5m]))" 2026-11-02T09:00:00Z 2026-11-02T11:40:00Z 300 1
-
-echo "== 종료 사유"
-promr "max by (pod,reason)(kube_pod_container_status_last_terminated_reason{namespace=\"$NS\",pod=~\"$POD\"})" 2026-11-02T09:00:00Z 2026-11-02T11:40:00Z 1800 1
+QN=$(oc -n ai get pod | grep -i 'milvus844.*querynode' | head -1 | awk '{print $1}')
+oc -n ai exec $QN -- sh -c 'df -h 2>/dev/null; du -sh /var/lib/milvus/* /tmp /milvus/* 2>/dev/null'
 
 
 
-
-
-promr () {
-  $PROM http://localhost:9090/api/v1/query_range --data-urlencode "query=$1" \
-    --data-urlencode "start=$2" --data-urlencode "end=$3" --data-urlencode "step=$4" \
-  | python3 -c '
-import sys,json,datetime as d
-div=float(sys.argv[1]); r=json.load(sys.stdin)
-if r.get("status")!="success": print(r); sys.exit()
-if not r["data"]["result"]: print("  (no data)")
-for s in r["data"]["result"]:
-  print("  ", {k:v for k,v in s["metric"].items() if k!="__name__"})
-  for t,v in s["values"]:
-    k=d.datetime.utcfromtimestamp(float(t))+d.timedelta(hours=9)
-    if float(v)!=0: print("   ", k.strftime("%m/%d %H:%M KST"), round(float(v)/div,2))
-' "$5"
-}
-
-echo "== 종료 사유 (reason 라벨 확인)"
-promr "max by (pod,reason)(kube_pod_container_status_last_terminated_reason{namespace=\"$NS\",pod=~\"$POD\"})" 2026-11-02T09:00:00Z 2026-11-02T11:40:00Z 300 1
-
-echo "== liveness/readiness probe 실패 횟수 (5분)"
-promr "sum by (pod,probe_type)(increase(prober_probe_total{namespace=\"$NS\",pod=~\"$POD\",result!=\"successful\"}[5m]))" 2026-11-02T09:00:00Z 2026-11-02T11:40:00Z 300 1
-
-
-
-
-
-
-
-
-promr "max by (pod)(max_over_time(container_memory_working_set_bytes{namespace=\"$NS\",pod=~\"$POD\",container!=\"\",container!=\"POD\"}[1h]))" 2026-11-02T11:00:00Z $(date -u +%Y-%m-%dT%H:00:00Z) 3600 1048576
+oc -n ai get cm | grep -i milvus844
+oc -n ai get cm <위에서 나온 milvus 설정 cm> -o yaml | grep -iE -A2 'localStorage|mmap|cache'
