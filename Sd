@@ -1,17 +1,13 @@
-for N in $(oc -n ai get pod -o wide | grep -i 'milvus844.*querynode' | awk '{print $7}' | sort -u); do
-  oc get --raw /api/v1/nodes/$N/proxy/stats/summary | python3 -c '
-import sys,json
-for p in json.load(sys.stdin)["pods"]:
-  if "querynode" in p["podRef"]["name"] and "milvus844" in p["podRef"]["name"]:
-    e=p.get("ephemeral-storage",{}); print(p["podRef"]["name"], round(e.get("usedBytes",0)/2**20),"MiB")'
-done
+# 재시작 횟수, 기동 시간
+oc -n ai get pod | grep milvus72-kafka
 
+# 현재 메모리, 한도
+oc -n ai adm top pod | grep milvus72-kafka
+oc -n ai get pod ibm-lh-lakehouse-milvus72-kafka-2 -o jsonpath='{.spec.containers[*].resources}{"\n"}'
 
+# 최근 로그에서 OOM, GC 경고
+oc -n ai logs ibm-lh-lakehouse-milvus72-kafka-2 --since=6h | grep -iE 'outofmemory|gc overhead|pause' | tail -20
 
-QN=$(oc -n ai get pod | grep -i 'milvus844.*querynode' | head -1 | awk '{print $1}')
-oc -n ai exec $QN -- sh -c 'df -h 2>/dev/null; du -sh /var/lib/milvus/* /tmp /milvus/* 2>/dev/null'
-
-
-
-oc -n ai get cm | grep -i milvus844
-oc -n ai get cm <위에서 나온 milvus 설정 cm> -o yaml | grep -iE -A2 'localStorage|mmap|cache'
+# 최근 6시간 컨테이너 메모리 추이 (1시간 간격, MiB)
+POD='.*milvus72-kafka.*'
+promr "max by (pod)(max_over_time(container_memory_working_set_bytes{namespace=\"ai\",pod=~\"$POD\",container!=\"\",container!=\"POD\"}[1h]))" $(date -u -d '-6 hour' +%Y-%m-%dT%H:00:00Z) $(date -u +%Y-%m-%dT%H:00:00Z) 3600 1048576
